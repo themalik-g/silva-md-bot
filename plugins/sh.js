@@ -1,11 +1,29 @@
 'use strict';
 
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
+
+function parseCommand(cmdString) {
+    const matches = cmdString.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+    return matches.map(arg => {
+        if ((arg.startsWith('"') && arg.endsWith('"')) || (arg.startsWith("'") && arg.endsWith("'"))) {
+            return arg.slice(1, -1);
+        }
+        return arg;
+    });
+}
 
 function shell(cmd) {
     return new Promise((resolve) => {
-        exec(cmd, { timeout: 20000, maxBuffer: 1024 * 1024 * 4, cwd: process.cwd() }, (err, stdout, stderr) => {
-            resolve({ stdout: (stdout || '').trim(), stderr: (stderr || '').trim(), code: err?.code ?? 0 });
+        const parts = parseCommand(cmd);
+        if (parts.length === 0) {
+            return resolve({ stdout: '', stderr: 'No command specified', code: 1 });
+        }
+        const file = parts[0];
+        const args = parts.slice(1);
+
+        execFile(file, args, { timeout: 20000, maxBuffer: 1024 * 1024 * 4, cwd: process.cwd() }, (err, stdout, stderr) => {
+            const exitCode = typeof err?.code === 'number' ? err.code : (err ? 1 : 0);
+            resolve({ stdout: (stdout || '').trim(), stderr: (stderr || (err?.message ?? '')).trim(), code: exitCode });
         });
     });
 }
@@ -17,6 +35,8 @@ module.exports = {
     permission:  'owner',
     group:       true,
     private:     true,
+    shell,
+    parseCommand,
 
     run: async (sock, message, args, ctx) => {
         const { jid, contextInfo, isOwner, reply } = ctx;
