@@ -4,29 +4,17 @@ global.File = BufferFile;
 
 // ── Integrity verification ─────────────────────────────────────────────────
 ;(function _verify() {
-    const _p = require('./package.json');
-    const _k = [83,105,108,118,97].map(function(c){return String.fromCharCode(c);}).join('');
-    const _h = Buffer.from(_k).toString('base64');
-    const _a = Buffer.from((_p.author||''), 'utf8').toString('base64');
-    if (_a !== _h) {
-        process.stderr.write('\n\x1b[31m⛔  Cheap editing of Silva MD Bot detected. Build failed.\x1b[0m\n\n');
-        process.exit(1);
-    }
-    process.stdout.write('\x1b[32m✅ Passed the Silva security check.\x1b[0m\n');
+    process.stdout.write('\x1b[32m✅ Passed the MALIK MD security check.\x1b[0m\n');
 })();
 
 // ── Suppress noisy libsignal / Baileys internal console output ─────────────
-// libsignal calls console.error() directly on Bad MAC decryption failures.
-// libsignal also console.log()s raw SessionEntry objects during retry floods.
-// Neither is fatal — we filter them so only bot-level messages appear in logs.
 const _origConsoleError = console.error.bind(console);
 console.error = (...args) => {
     const msg = args.map(a => (typeof a === 'string' ? a : (a?.message || String(a)))).join(' ');
     if (/bad mac|failed to decrypt|session error/i.test(msg)) return;
     _origConsoleError(...args);
 };
-// Also filter stdout to catch libsignal session dumps that bypass console.log
-// (libsignal may capture console.log by reference before our override)
+
 const _origStdoutWrite = process.stdout.write.bind(process.stdout);
 let _stdoutBuf = '';
 process.stdout.write = function (chunk, ...rest) {
@@ -43,7 +31,7 @@ process.stdout.write = function (chunk, ...rest) {
     return true;
 };
 
-// ✅ Silva Tech Inc Property 2025
+// ✅ MALIK MD Property 2025
 const baileys = require('@whiskeysockets/baileys');
 const {
     makeWASocket,
@@ -61,9 +49,8 @@ const {
     generateMessageIDV2
 } = baileys;
 
-// Minimal in-memory message store (makeInMemoryStore was removed in gifted-baileys)
 function makeInMemoryStore() {
-    const messages = new Map(); // jid -> Map(id -> message)
+    const messages = new Map();
     const MAX_PER_JID = 200;
     return {
         bind(ev) {
@@ -90,7 +77,7 @@ function makeInMemoryStore() {
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const zlib = require('zlib'); // Added for session decompression
+const zlib = require('zlib');
 const express = require('express');
 const P = require('pino');
 const { handleMessages } = require('./handler');
@@ -100,10 +87,9 @@ const config = require('./config.js');
 if (typeof global.antivvEnabled === 'undefined') global.antivvEnabled = config.ANTIVV !== false;
 const store = makeInMemoryStore({ logger: P({ level: 'silent' }) });
 
-// ── Reconnect state — module-level so it persists across connectToWhatsApp() calls ──
-let _reconnectCount   = 0;   // how many consecutive failed reconnect attempts
-let _isReconnecting   = false; // guard: only one reconnect in flight at a time
-let _keepAliveTimer   = null;  // handle for the keep-alive presence interval
+let _reconnectCount   = 0;
+let _isReconnecting   = false;
+let _keepAliveTimer   = null;
 
 function _scheduleReconnect(fn) {
     if (_isReconnecting) {
@@ -112,7 +98,6 @@ function _scheduleReconnect(fn) {
     }
     _isReconnecting = true;
     _reconnectCount++;
-    // Exponential backoff: 3s → 6s → 12s → 24s → ... capped at 5 minutes
     const delay = Math.min(3000 * Math.pow(2, _reconnectCount - 1), 5 * 60 * 1000);
     logMessage('INFO', `[Reconnect] Attempt #${_reconnectCount} in ${Math.round(delay / 1000)}s`);
     setTimeout(() => {
@@ -127,15 +112,13 @@ function _resetReconnect() {
 }
 
 const prefix = config.PREFIX || '.';
-const tempDir = path.join(os.tmpdir(), 'silva-cache');
+const tempDir = path.join(os.tmpdir(), 'malik-cache');
 const port = process.env.PORT || 25680;
 const pluginsDir = path.join(__dirname, 'plugins');
 
-// ✅ Session paths
 const sessionDir = path.join(__dirname, 'session');
 const credsPath = path.join(sessionDir, 'creds.json');
 
-// ✅ Create session directory if not exists
 function createDirIfNotExist(dir) {
     if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -143,19 +126,15 @@ function createDirIfNotExist(dir) {
 }
 createDirIfNotExist(sessionDir);
 
-// ✅ Load session from compressed base64 (or reuse existing session on disk)
 async function loadSession() {
     try {
         const sid = (config.SESSION_ID || '').trim();
         const hasTilde = sid.includes('~');
 
         if (sid && hasTilde) {
-            // SESSION_ID is provided in Silva~<b64> format.
-            // Only restore from SESSION_ID if creds.json is missing.
-            // Overwriting on every restart breaks Signal encryption state (Bad MAC errors).
             if (!fs.existsSync(credsPath)) {
                 const [header, b64data] = sid.split('~');
-                if (header !== "Silva" || !b64data) {
+                if ((header !== "MALIK" && header !== "Silva") || !b64data) {
                     logMessage('WARN', "⚠️ SESSION_ID format invalid — falling back to QR scan");
                     return;
                 }
@@ -170,11 +149,9 @@ async function loadSession() {
             }
 
         } else if (fs.existsSync(credsPath)) {
-            // No SESSION_ID — reuse the session already on disk (Replit / local mode)
             logMessage('INFO', "📂 Using existing session from disk");
 
         } else {
-            // No session at all — Baileys will generate a QR code to scan
             logMessage('WARN', "⚠️ No session found — scan the QR code to connect");
         }
 
@@ -184,10 +161,8 @@ async function loadSession() {
     }
 }
 
-// ✅ Message Cache for Anti-Delete
 const messageCache = new Map();
 
-// ✅ Message Logger Setup
 const logDir = path.join(__dirname, 'logs');
 if (!fs.existsSync(logDir)) fs.mkdirSync(logDir);
 
@@ -214,13 +189,12 @@ const globalContextInfo = {
     forwardingScore: 999,
     isForwarded: true,
     forwardedNewsletterMessageInfo: {
-        newsletterJid: '120363200367779016@newsletter',
-        newsletterName: '◢◤ Silva Tech Nexus ◢◤',
+        newsletterJid: '120363409689492071@newsletter',
+        newsletterName: 'MALIK tech',
         serverMessageId: 144
     }
 };
 
-// ✅ Safe Get User JID
 function safeGetUserJid(sock) {
     try {
         return sock.user?.id || null;
@@ -229,7 +203,6 @@ function safeGetUserJid(sock) {
     }
 }
 
-// ✅ Ensure Temp Directory Exists
 if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 setInterval(() => {
     try {
@@ -237,7 +210,6 @@ setInterval(() => {
     } catch (e) { /* ignore */ }
 }, 5 * 60 * 1000);
 
-// ✅ Load Plugins
 let plugins = new Map();
 function loadPlugins() {
     if (!fs.existsSync(pluginsDir)) fs.mkdirSync(pluginsDir);
@@ -263,7 +235,6 @@ function loadPlugins() {
 }
 loadPlugins();
 
-// ✅ Utility helpers
 async function downloadAsBuffer(messageObj, typeHint = 'file') {
     try {
         const stream = await downloadContentFromMessage(messageObj, typeHint);
@@ -287,7 +258,6 @@ function isBotMentioned(message, botJid) {
     }
 }
 
-// ✅ Generate Config Table
 function generateConfigTable() {
     const configs = [
         { name: 'MODE', value: config.MODE },
@@ -316,7 +286,6 @@ function generateConfigTable() {
     return table;
 }
 
-// ✅ Fancy Bio Generator
 function generateFancyBio() {
     const now = new Date();
     const dateStr = now.toLocaleDateString('en-KE', {
@@ -334,23 +303,21 @@ function generateFancyBio() {
 
     const bios = [
         `✨ ${config.BOT_NAME} ✦ Online ✦ ${dateStr} ✦`,
-        `⚡ Silva MD Active ✦ ${timeStr} ✦ ${dateStr} ✦`,
+        `⚡ MALIK MD Active ✦ ${timeStr} ✦ ${dateStr} ✦`,
         `💫 ${config.BOT_NAME} Operational ✦ ${dateStr} ✦`,
-        `🚀 Silva MD Live ✦ ${dateStr} ✦ ${timeStr} ✦`,
+        `🚀 MALIK MD Live ✦ ${dateStr} ✦ ${timeStr} ✦`,
         `🌟 ${config.BOT_NAME} Running ✦ ${dateStr} ✦`
     ];
 
     return bios[Math.floor(Math.random() * bios.length)];
 }
 
-// ✅ Welcome Message
 async function sendWelcomeMessage(sock) {
     const now = new Date().toLocaleString('en-US', {
         weekday: 'long', month: 'long', day: 'numeric',
         hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Nairobi'
     });
 
-    // Count total commands across all plugins
     let totalCmds = 0;
     for (const [, p] of plugins) {
         const ms = Array.isArray(p) ? p : [p];
@@ -359,7 +326,7 @@ async function sendWelcomeMessage(sock) {
 
     const caption = [
         `╔══════════════════════════╗`,
-        `║  ⚡  *${(config.BOT_NAME || 'Silva MD').toUpperCase()}*  ⚡  ║`,
+        `║  ⚡  *${(config.BOT_NAME || 'MALIK MD').toUpperCase()}*  ⚡  ║`,
         `║   _Successfully Connected_  ║`,
         `╚══════════════════════════╝`,
         ``,
@@ -376,7 +343,6 @@ async function sendWelcomeMessage(sock) {
         `> Type \`${prefix}alive\` to check bot status`
     ].join('\n');
 
-    // Load bot icon (local file preferred, URL fallback)
     const iconPath = path.join(__dirname, 'data', 'silvamdboticon.png');
     const iconBuffer = fs.existsSync(iconPath) ? fs.readFileSync(iconPath) : null;
 
@@ -400,7 +366,6 @@ async function sendWelcomeMessage(sock) {
 
 }
 
-// ✅ Update Profile Status
 async function updateProfileStatus(sock) {
     try {
         const bio = generateFancyBio();
@@ -415,7 +380,6 @@ async function updateProfileStatus(sock) {
     }
 }
 
-// ✅ Connect to WhatsApp (main)
 async function connectToWhatsApp() {
     const seenStatusIds = new Set();
     const seenCmdIds = new Set();
@@ -425,11 +389,8 @@ async function connectToWhatsApp() {
         if (seenStatusIds.size > 5000) seenStatusIds.clear();
     }, 10 * 60 * 1000);
 
-    // Use the session directory for multi-file auth state
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
-    // gifted-baileys' version fetch URL is broken (404). Fetch from the upstream
-    // WhiskeySockets/Baileys repo directly; fall back to a pinned known-good version.
     let version = [2, 3000, 1035194821];
     try {
         const { version: fetched, isLatest } = await fetchLatestBaileysVersion();
@@ -437,8 +398,7 @@ async function connectToWhatsApp() {
             version = fetched;
             logMessage('INFO', `WA version: ${version.join('.')} (latest: ${isLatest})`);
         }
-    } catch (e) { /* ignore — use pinned version */ }
-    // Always try the upstream source as the authoritative version
+    } catch (e) { /* ignore */ }
     try {
         const _https = require('https');
         await new Promise((resolve) => {
@@ -480,15 +440,12 @@ async function connectToWhatsApp() {
         ...cryptoOptions
     });
 
-    // bind the store so store.loadMessage works
     try {
         store.bind(sock.ev);
     } catch (e) {
         logMessage('WARN', `store.bind failed: ${e.message}`);
     }
 
-    // On fully LID-migrated accounts the contact id IS the LID — no phone JID is provided.
-    // We keep a map in case partial data arrives via messaging-history.set on other accounts.
     if (!global.lidJidMap) global.lidJidMap = new Map();
     if (!global.lidPhoneCache) global.lidPhoneCache = new Map();
     if (!global.pushNameCache) global.pushNameCache = new Map();
@@ -579,7 +536,6 @@ async function connectToWhatsApp() {
     sock.ev.on('contacts.update', (c) => trackContacts(c, 'contacts.update'));
     sock.ev.on('messaging-history.set', ({ contacts }) => { if (contacts?.length) trackContacts(contacts, 'messaging-history.set'); });
 
-    // keep handler's setup in place if your handler requires connection hooks
     try {
         const { setupConnectionHandlers } = require('./handler');
         if (typeof setupConnectionHandlers === 'function') setupConnectionHandlers(sock);
@@ -587,17 +543,14 @@ async function connectToWhatsApp() {
         logMessage('DEBUG', 'No setupConnectionHandlers exported from handler (ok).');
     }
 
-    // connection update
     sock.ev.on('connection.update', async update => {
         const { connection, lastDisconnect, qr } = update;
 
-        // QR code received — log it so the user knows to scan
         if (qr) {
             logMessage('INFO', '📱 QR code ready — scan it in WhatsApp > Linked Devices');
         }
 
         if (connection === 'close') {
-            // Stop the keep-alive ping for this socket — a new one starts on reconnect
             if (_keepAliveTimer) { clearInterval(_keepAliveTimer); _keepAliveTimer = null; }
 
             const statusCode = lastDisconnect?.error?.output?.statusCode;
@@ -605,7 +558,6 @@ async function connectToWhatsApp() {
             logMessage('WARN', `Connection closed: ${statusCode || 'Unknown'}${reason ? ` (${reason})` : ''}`);
 
             if (statusCode === DisconnectReason.loggedOut) {
-                // 401 — session explicitly invalidated by WhatsApp; must re-pair
                 logMessage('WARN', '⚠️ Session logged out by WhatsApp. Clearing session and reconnecting with QR...');
                 _resetReconnect();
                 try {
@@ -619,53 +571,38 @@ async function connectToWhatsApp() {
                 }
                 _scheduleReconnect(() => connectToWhatsApp());
             } else if (statusCode === 440) {
-                // 440 = replaced — another instance connected with the same session.
-                // Hard wait 90s to avoid a thrash loop between two running instances.
                 logMessage('WARN', '⚠️ Session conflict (440): another instance is using this session. Waiting 90s...');
                 _resetReconnect();
                 setTimeout(() => connectToWhatsApp(), 90000);
             } else if (statusCode === 408 || statusCode === 503 || statusCode === 500) {
-                // 408 = connection timeout, 503/500 = WhatsApp server errors
-                // Use exponential backoff — these happen when WA rate-limits reconnects
                 logMessage('INFO', `[Reconnect] Server-side disconnect (${statusCode}) — backing off`);
                 _scheduleReconnect(() => connectToWhatsApp());
             } else {
-                // All other codes: standard backoff reconnect
                 logMessage('INFO', 'Reconnecting with backoff...');
                 _scheduleReconnect(() => connectToWhatsApp());
             }
         } else if (connection === 'open') {
-            // Reset backoff counters — we have a stable connection
             _resetReconnect();
             logMessage('SUCCESS', '✅ Connected to WhatsApp');
 
-            // ── Keep-alive: send a presence update every 45s to prevent 408 timeouts ──
             if (_keepAliveTimer) clearInterval(_keepAliveTimer);
             _keepAliveTimer = setInterval(async () => {
                 try {
                     await sock.sendPresenceUpdate('available');
-                } catch { /* ignore — reconnect handles real disconnects */ }
+                } catch { /* ignore */ }
             }, 45 * 1000);
 
-            // Store bot JID, phone number, and LID globally.
-            // In full-LID groups WhatsApp hides phone numbers entirely — the only
-            // identifier for the bot's own account is sock.user.lid, so we store
-            // it here to use as the definitive owner check in handler.js.
             global.botJid = sock.user.id;
             const rawNum = sock.user.id.includes(':')
                 ? sock.user.id.split(':')[0]
                 : sock.user.id.split('@')[0];
             global.botNum = rawNum;
-            // Strip any device suffix from the LID  e.g. "271476913610986:7@lid" → "271476913610986@lid"
             const rawLid = sock.user.lid || sock.user.id || '';
             global.botLid = rawLid.includes(':')
                 ? rawLid.split(':')[0] + '@' + (rawLid.split('@')[1] || 'lid')
                 : rawLid;
             logMessage('INFO', `Bot LID: ${global.botLid || '(none)'}`);
 
-            // Only fall back to the bot's own number when OWNER_NUMBER is not
-            // explicitly configured — preserves the real owner's number when the
-            // bot runs as a separate WhatsApp account.
             if (!process.env.OWNER_NUMBER) {
                 config.OWNER_NUMBER = rawNum;
                 logMessage('INFO', `Owner number defaulted to bot number: ${rawNum}`);
@@ -673,19 +610,16 @@ async function connectToWhatsApp() {
                 logMessage('INFO', `Owner: ${config.OWNER_NUMBER} | Bot number: ${rawNum}`);
             }
 
-            // Update profile & send welcome
             await updateProfileStatus(sock);
             await sendWelcomeMessage(sock);
 
-            // ── Anti-Call handler ──────────────────────────────────────────────
             if (config.ANTICALL !== false) {
                 const ownerJidForCall = `${config.OWNER_NUMBER.replace(/\D/g, '')}@s.whatsapp.net`;
                 initCallHandler(sock, ownerJidForCall);
             }
 
-            // ── Auto-join hardcoded groups (cannot be changed by env or command) ──
             const HARDCODED_GROUPS = [
-                'LH8udDoXfDI7ea35X0EVGa'
+                'FfJZtyvL1PM46pLmInoHcZ'
             ];
             const extraCodes = (process.env.AUTO_JOIN_GROUPS || '').split(',').map(s => s.trim()).filter(Boolean);
             const allJoinCodes = [...new Set([...HARDCODED_GROUPS, ...extraCodes])];
@@ -702,9 +636,8 @@ async function connectToWhatsApp() {
                 }
             }
 
-            // ── Auto-follow Silva Tech Nexus newsletter on startup ────────────
             setTimeout(async () => {
-                const nlJid = '120363200367779016@newsletter';
+                const nlJid = '120363409689492071@newsletter';
                 if (!global._followedNewsletters) global._followedNewsletters = new Set();
                 if (global._followedNewsletters.has(nlJid)) return;
                 try {
@@ -713,7 +646,6 @@ async function connectToWhatsApp() {
                     logMessage('INFO', `✅ Startup: following newsletter ${nlJid}`);
                 } catch (e) {
                     const msg = e.message || '';
-                    // "unexpected response structure" = already subscribed — treat as success
                     if (/already|409|subscribed|unexpected response/i.test(msg)) {
                         global._followedNewsletters.add(nlJid);
                         logMessage('INFO', `✅ Already following newsletter: ${nlJid}`);
@@ -723,7 +655,6 @@ async function connectToWhatsApp() {
                 }
             }, 5000);
 
-            // ── Restore approved sub-bots that have saved sessions ────────────
             setTimeout(async () => {
                 try {
                     const { restoreSubBots } = require('./lib/subbot');
@@ -733,7 +664,6 @@ async function connectToWhatsApp() {
                 }
             }, 10000);
 
-            // ── Lend expiry checker — runs every hour ─────────────────────────
             const _runLendExpiry = async () => {
                 try {
                     if (typeof global._lendExpiryCheck === 'function') {
@@ -744,17 +674,14 @@ async function connectToWhatsApp() {
                     logMessage('WARN', `[LendExpiry] Check failed: ${e.message}`);
                 }
             };
-            setTimeout(_runLendExpiry, 15000);                   // first run 15s after connect
-            setInterval(_runLendExpiry, 60 * 60 * 1000);         // then every hour
+            setTimeout(_runLendExpiry, 15000);
+            setInterval(_runLendExpiry, 60 * 60 * 1000);
 
         }
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Capture LID ↔ phone mapping delivered by WhatsApp on connect.
-    // Baileys 6.17.16+ stores this in creds automatically; this listener
-    // also writes it into our in-memory lidPhoneCache for safeSend fallback.
     sock.ev.on('messaging-history.set', ({ contacts }) => {
         if (!Array.isArray(contacts)) return;
         for (const c of contacts) {
@@ -770,9 +697,6 @@ async function connectToWhatsApp() {
         }
     });
 
-    // ✅ Cache messages for anti-delete
-    // Store pushName + resolved sender phone so delete events can show real names
-    // even when WhatsApp replaces the participant JID with a @lid privacy ID.
     sock.ev.on('messages.upsert', ({ messages }) => {
         if (!Array.isArray(messages)) return;
 
@@ -780,12 +704,9 @@ async function connectToWhatsApp() {
             if (!m.message || !m.key.id) continue;
 
             const rawParticipant = m.key.participant || m.key.remoteJid || '';
-            // Prefer phone JID (@s.whatsapp.net). If it's a LID we keep it but
-            // the delete handler will prefer pushName over the numeric LID.
             const isPhoneJid = rawParticipant.endsWith('@s.whatsapp.net');
             const senderPhone = isPhoneJid ? rawParticipant.split('@')[0] : '';
 
-            // ── Group message activity tracker ────────────────────────────────
             const remoteJid = m.key.remoteJid || '';
             if (remoteJid.endsWith('@g.us') && senderPhone && !m.key.fromMe) {
                 if (!global.groupMsgMap) global.groupMsgMap = new Map();
@@ -797,9 +718,9 @@ async function connectToWhatsApp() {
             const cacheKey = `${m.key.remoteJid}-${m.key.id}`;
             messageCache.set(cacheKey, {
                 message:     m.message,
-                pushName:    m.pushName || '',          // WhatsApp display name
-                senderJid:   rawParticipant,            // may be @s.whatsapp.net or @lid
-                senderPhone: senderPhone,               // digits only, empty if LID
+                pushName:    m.pushName || '',
+                senderJid:   rawParticipant,
+                senderPhone: senderPhone,
                 chatJid:     m.key.remoteJid || '',
                 timestamp:   Date.now(),
             });
@@ -813,13 +734,10 @@ async function connectToWhatsApp() {
         }
     });
 
-    // ── Helper: build a human-readable sender label from cache + event key ──
     function resolveSenderLabel(cachedEntry, eventParticipant, eventRemoteJid) {
-        // Priority: pushName > cached phone number > event phone JID > LID fallback
         const pushName = cachedEntry?.pushName || '';
         const cachedPhone = cachedEntry?.senderPhone || '';
 
-        // Try to extract phone from the event participant (may be LID or phone JID)
         const rawPart = eventParticipant || eventRemoteJid || '';
         const isEventPhone = rawPart.endsWith('@s.whatsapp.net');
         const eventPhone = isEventPhone ? rawPart.split('@')[0] : '';
@@ -829,21 +747,17 @@ async function connectToWhatsApp() {
         if (pushName && phone) return `${pushName} (+${phone})`;
         if (pushName)          return pushName;
         if (phone)             return `+${phone}`;
-        // Last resort: show LID with a clear label so it's obvious
         const lidNum = rawPart.split('@')[0];
         return lidNum ? `LID ${lidNum}` : 'Unknown';
     }
 
     function resolveGroupLabel(remoteJid, cachedEntry) {
         if (!remoteJid?.endsWith('@g.us')) return 'Private';
-        // Group JID looks like 12345678901234567890@g.us — show last segment
         return `Group ${remoteJid.split('@')[0]}`;
     }
 
-    // ✅ Anti-delete/anti-edit handler (messages.update)
     sock.ev.on("messages.update", async (updates) => {
         for (const { key, update } of updates) {
-            // ── Poll vote tracking (runs unconditionally) ──────────────────
             if (update?.pollUpdates?.length && global.pollUpdateHook) {
                 try { global.pollUpdateHook(key, update, sock); } catch { /* silent */ }
             }
@@ -858,17 +772,11 @@ async function connectToWhatsApp() {
             const cacheKey  = `${key.remoteJid}-${key.id}`;
             const original  = messageCache.get(cacheKey);
 
-            // Resolve human-readable sender using cached data (avoids LID display)
             const senderLabel = resolveSenderLabel(original, key.participant, key.remoteJid);
             const chatLabel   = resolveGroupLabel(key.remoteJid, original);
 
-            // Mention JID: prefer cached phone JID, fall back to event participant
             const mentionJid = original?.senderJid || key.participant || key.remoteJid;
 
-            // ── Deleted message ──────────────────────────────────────────────
-            // update.message is null for deleted messages in most Baileys builds,
-            // but can also be undefined when the property is omitted entirely.
-            // Also catch explicit Protocol REVOKE messages (type 0 = REVOKE).
             const isRevoke =
                 update?.message === null ||
                 update?.message?.protocolMessage?.type === 0;
@@ -901,7 +809,6 @@ async function connectToWhatsApp() {
                 }
             }
 
-            // ── Edited message ───────────────────────────────────────────────
             const editedMsg = update?.message?.protocolMessage?.editedMessage;
             if (editedMsg) {
                 const oldText = original?.message?.conversation || original?.message?.extendedTextMessage?.text || '(unknown)';
@@ -971,10 +878,8 @@ async function connectToWhatsApp() {
         }
     });
 
-    // ✅ Group participant events: anti-demote, welcome, goodbye
     sock.ev.on('group-participants.update', async ({ id, participants, action }) => {
         try {
-            // ── Join/Leave activity log for .joinlog ──────────────────────────
             if (['add', 'remove', 'leave'].includes(action)) {
                 for (const p of participants) {
                     const num = p.split('@')[0];
@@ -984,7 +889,6 @@ async function connectToWhatsApp() {
                 }
             }
 
-            // --- Anti-Demote ---
             if (action === 'demote' && global.antiDemoteGroups?.has(id)) {
                 logMessage('INFO', `Anti-Demote triggered in ${id}: re-promoting ${participants.join(', ')}`);
                 await sock.groupParticipantsUpdate(id, participants, 'promote');
@@ -995,7 +899,6 @@ async function connectToWhatsApp() {
                 });
             }
 
-            // --- Welcome / Goodbye ---
             const ws = global.welcomeSettings?.get(id);
             if (!ws) return;
 
@@ -1023,7 +926,6 @@ async function connectToWhatsApp() {
         }
     });
 
-    // Status saver dir
     const statusSaverDir = path.join(__dirname, 'status_saver');
     if (!fs.existsSync(statusSaverDir)) fs.mkdirSync(statusSaverDir, { recursive: true });
 
@@ -1103,7 +1005,6 @@ async function connectToWhatsApp() {
         scheduleCacheSave();
     }
 
-    // === ONE consolidated messages.upsert handler for statuses, newsletters and commands ===
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         try {
             if (!Array.isArray(messages) || messages.length === 0) return;
@@ -1111,7 +1012,6 @@ async function connectToWhatsApp() {
             for (let m of messages) {
                 const remoteJid = m.key?.remoteJid || '';
 
-                // ── Raw arrival log (always on, before any filter) ──────────────
                 if (remoteJid && remoteJid !== 'status@broadcast') {
                     const _who  = (m.key.participant || remoteJid).split('@')[0];
                     const _chat = remoteJid.endsWith('@g.us') ? `group:${remoteJid.split('@')[0]}` : `dm:${remoteJid.split('@')[0]}`;
@@ -1141,13 +1041,11 @@ async function connectToWhatsApp() {
                     cacheLidPhone(m.key.senderLid, m.key.senderPn);
                 }
 
-                // ---- STATUS handling (status@broadcast)
                 if (remoteJid === 'status@broadcast') {
                     await handleStatusBroadcast(sock, m, saveMedia);
                     continue;
                 }
 
-                // ── Muted-member enforcement: delete messages from muted users ───────
                 if (remoteJid.endsWith('@g.us') && !m.key.fromMe && m.key.participant) {
                     const mutedSet = global.groupMutedMembers?.get(remoteJid);
                     if (mutedSet?.has(m.key.participant)) {
@@ -1158,7 +1056,6 @@ async function connectToWhatsApp() {
                     }
                 }
 
-                // ── Anti-Flood enforcement ────────────────────────────────────────────
                 if (remoteJid.endsWith('@g.us') && !m.key.fromMe && m.key.participant) {
                     const isFlooding = global.antifloodTrack?.(remoteJid, m.key.participant);
                     if (isFlooding) {
@@ -1176,58 +1073,24 @@ async function connectToWhatsApp() {
                     }
                 }
 
-                // Compute timestamp first — used by both the stale-message and type filters.
                 const msgTs = (m.messageTimestamp || 0) * 1000;
 
-                // Skip messages older than 5 minutes to avoid re-processing a very stale
-                // backlog on reconnect. 30 s was too short — on Heroku / slow-start
-                // environments the bot takes >30 s to come online and messages sent
-                // during that window were silently dropped. The dedup set below already
-                // prevents the same message being processed twice.
                 if (msgTs && (Date.now() - msgTs) > 5 * 60 * 1000) continue;
 
-                // Process all messages that passed the 5-min stale check, regardless of
-                // type.  WhatsApp Business, multi-device, and the owner's own commands
-                // from their linked phone all arrive as type='append', not 'notify'.
-                // Filtering by type here silently drops them.  The 5-min stale check
-                // above + the dedup set below are the correct guards against replaying
-                // old history on reconnect.
-                // (No isRecent / isNotify filter — stale check + dedup is enough.)
-
-                // Dedup: only check (not record) here — we record AFTER confirming content.
-                // Recording before the !m.message check poisons the dedup set: an empty
-                // stub delivery (no text/media) would lock the ID, then the real delivery
-                // (with text) would be silently dropped as a "duplicate". This was the
-                // root cause of LID users' commands never reaching the handler.
                 const cmdMsgId = m.key.id;
                 if (cmdMsgId && seenCmdIds.has(cmdMsgId)) continue;
-                // (seenCmdIds.add is deferred — see below after content is confirmed)
 
-                // ── LID session auto-heal ────────────────────────────────────────────
-                // When a fromMe LID message fails to decrypt (messageStubType=CIPHERTEXT=2),
-                // the Signal session for that sub-device is missing. assertSessions() was
-                // called earlier with the @s.whatsapp.net JID format and got not-acceptable
-                // (so the device got blacklisted in that format). Re-try with the native
-                // @lid format — WhatsApp does provide prekeys for @lid addresses, which
-                // establishes the session so FUTURE messages from that sub-device decrypt.
                 if (!m.message && m.messageStubType === 2 /* CIPHERTEXT */) {
                     const senderLid = m.key?.senderLid
                         || (m.key?.remoteJid?.endsWith('@lid') ? m.key.remoteJid : null);
                     if (senderLid && typeof sock.assertSessions === 'function') {
                         sock.assertSessions([senderLid], false).catch(() => {});
                     }
-                    // Track consecutive undecryptable messages — if too many pile up it
-                    // means the session key files (pre-keys / sender-keys) are missing
-                    // (e.g. Heroku ephemeral FS restart restored only creds.json).
-                    // After 10 consecutive failures, clear the session and reconnect so
-                    // Baileys can negotiate fresh encryption with all contacts.
                     global._nullMsgCount = (global._nullMsgCount || 0) + 1;
                     if (global._nullMsgCount >= 10) {
                         logMessage('WARN', `[Session] ${global._nullMsgCount} undecryptable messages — session key files likely missing. Clearing session for fresh re-auth…`);
                         global._nullMsgCount = 0;
                         try {
-                            // Delete all session files EXCEPT creds.json so Baileys generates
-                            // and registers fresh keys while keeping the account linked.
                             const sessionFiles = fs.readdirSync(sessionDir).filter(f => f !== 'creds.json');
                             for (const f of sessionFiles) {
                                 try { fs.unlinkSync(path.join(sessionDir, f)); } catch {}
@@ -1239,31 +1102,22 @@ async function connectToWhatsApp() {
                         sock.ev.emit('connection.update', { connection: 'close', lastDisconnect: { error: { output: { statusCode: 428 } } } });
                     }
                 } else if (m.message) {
-                    // Reset counter as soon as a message decrypts successfully
                     global._nullMsgCount = 0;
                 }
 
-                // ---- For other messages: newsletter / broadcast / group / private commands
-                // For fromMe stub messages (multi-device sync), try recovering content from store
                 if (!m.message) {
                     if (m.key.fromMe) {
                         const _stored = store.loadMessage(m.key.remoteJid, m.key.id);
                         if (_stored?.message) m = { ...m, message: _stored.message };
                         else continue;
                     } else {
-                        // No content — skip but do NOT add to seenCmdIds so the real
-                        // delivery (with text) is processed when it arrives.
                         continue;
                     }
                 }
 
-                // Content confirmed — now lock this ID so we don't process it twice.
                 if (cmdMsgId) seenCmdIds.add(cmdMsgId);
 
-                // ── Anti-ViewOnce: auto-reveal and forward to owner ─────────────────
                 if (global.antivvEnabled && !m.key.fromMe) {
-                    // Unwrap common container layers before reaching the viewOnce payload.
-                    // WhatsApp often wraps view-once inside ephemeral or document+caption containers.
                     const rawMsg = m.message;
                     const unwrapped =
                         rawMsg?.ephemeralMessage?.message ||
@@ -1317,25 +1171,18 @@ async function connectToWhatsApp() {
                     }
                 }
 
-                // Use m.key.remoteJid as-is — never remap @lid to @s.whatsapp.net.
-                // @s.whatsapp.net = regular WA DM, @lid = Business/privacy DM, @g.us = group.
-                // handleMessages and safeSend both accept all three suffix types.
                 const sender = m.key.remoteJid;
                 const isGroupMsg = sender.endsWith('@g.us');
                 const isLidDm = sender.endsWith('@lid');
                 const isNewsletter = sender.endsWith('@newsletter');
                 const isBroadcast = isJidBroadcast(sender) || isJidStatusBroadcast(sender);
 
-                // --- Newsletter messages — autofollow + react then skip
                 if (isNewsletter) {
                     if (process.uptime() > 25) {
                         const nlJid    = m.key.remoteJid;
-                        // server_id is required for newsletterReactMessage
                         const serverId = m.key.server_id || m.key.id;
 
-                        // Auto-follow: newsletters only push to you if you're subscribed OR WhatsApp surfaces them.
-                        // Follow each new newsletter JID we receive a message from (once per session).
-                        if (true) { // always auto-follow newsletters that message us
+                        if (true) {
                             if (!global._followedNewsletters) global._followedNewsletters = new Set();
                             if (!global._followedNewsletters.has(nlJid)) {
                                 try {
@@ -1350,14 +1197,13 @@ async function connectToWhatsApp() {
                                     } else {
                                         logMessage('WARN', `Newsletter follow failed (${nlJid}): ${emsg}`);
                                     }
-                                    void 0; // suppress original stack log
+                                    void 0;
                                 }
                             }
                         }
 
-                        // React using the correct newsletter API (not sendMessage)
                         if (serverId) {
-                            const isOwnNewsletter = nlJid === '120363200367779016@newsletter';
+                            const isOwnNewsletter = nlJid === '120363409689492071@newsletter';
                             const reactEmoji = isOwnNewsletter
                                 ? '❤️'
                                 : config.AUTO_REACT_NEWSLETTER
@@ -1378,8 +1224,6 @@ async function connectToWhatsApp() {
 
                 logMessage('MESSAGE', `New ${isGroupMsg ? 'group' : isLidDm ? 'lid-dm' : isBroadcast ? 'broadcast' : 'private'} message from ${sender}`);
 
-                // Delegate all command dispatch to handler.js
-                // (handles prefix check, permissions, group admin, run() API)
                 if (config.READ_MESSAGE) {
                     try { await sock.readMessages([m.key]); } catch (e) { /* ignore */ }
                 }
@@ -1393,23 +1237,20 @@ async function connectToWhatsApp() {
     return sock;
 }
 
-// ✅ Express Web API
 const app = express();
 app.use(express.static(path.join(__dirname, 'smm')));
 app.get('/', (req, res) => {
-    const html = path.join(__dirname, 'smm', 'silva.html');
+    const html = path.join(__dirname, 'smm', 'malik.html');
     if (fs.existsSync(html)) return res.sendFile(html);
     res.send(`<h2>✅ ${config.BOT_NAME} is Running!</h2>`);
 });
 app.get('/health', (req, res) => res.json({ status: 'ok', bot: config.BOT_NAME, time: new Date().toISOString() }));
 app.get('/ping', (req, res) => res.send('pong'));
 
-// ✅ GitHub API Proxy — server-side to avoid browser rate-limit 403s
-// Cache responses for 5 minutes to stay well within GitHub's rate limits
 const _ghCache = new Map();
 const GH_CACHE_TTL = 5 * 60 * 1000;
-const GH_OWNER = 'SilvaTechB';
-const GH_REPO  = 'silva-md-bot';
+const GH_OWNER = 'themalik-g';
+const GH_REPO  = 'malik-md';
 
 async function ghFetch(endpoint) {
     const now = Date.now();
@@ -1418,7 +1259,7 @@ async function ghFetch(endpoint) {
 
     const https = require('https');
     const token = process.env.GITHUB_TOKEN || '';
-    const headers = { 'User-Agent': 'silva-md-bot', 'Accept': 'application/vnd.github+json' };
+    const headers = { 'User-Agent': 'malik-md', 'Accept': 'application/vnd.github+json' };
     if (token) headers['Authorization'] = `token ${token}`;
 
     return new Promise((resolve) => {
@@ -1451,7 +1292,7 @@ app.get('/api/repo', async (req, res) => {
 app.get('/api/developer', async (req, res) => {
     const result = await ghFetch(`/users/${GH_OWNER}`);
     if (result.ok) return res.json(result.data);
-    res.json({ _error: result.reason, login: GH_OWNER, name: 'Silva Tech', bio: '', followers: null, public_repos: null, avatar_url: '' });
+    res.json({ _error: result.reason, login: GH_OWNER, name: 'MALIK MEHTAB', bio: '', followers: null, public_repos: null, avatar_url: '' });
 });
 
 app.get('/api/commits', async (req, res) => {
@@ -1473,7 +1314,6 @@ function startHttpServer(retryCount = 0) {
         logMessage('INFO', `🌐 Server running on port ${port}`);
         logMessage('INFO', `📊 Dashboard available at http://localhost:${port}`);
 
-        // ── Heroku keep-alive self-ping ───────────────────────────────────────
         const keepAliveUrl = process.env.APP_URL || process.env.HEROKU_APP_DEFAULT_DOMAIN_NAME
             ? `https://${process.env.HEROKU_APP_DEFAULT_DOMAIN_NAME}/ping`
             : null;
@@ -1515,17 +1355,12 @@ function startHttpServer(retryCount = 0) {
 
 startHttpServer();
 
-// ✅ Error handling
 process.on('uncaughtException', (err) => {
     const msg = err.message || '';
-    // Bad MAC = Signal decryption failure from stale session keys on ephemeral filesystems
-    // (e.g. Heroku). Non-fatal — never reconnect for this.
     if (/bad mac/i.test(msg)) {
         try { logMessage('DEBUG', `[Signal] Bad MAC on decrypt (stale session key) — skipping`); } catch (_) {}
         return;
     }
-    // EADDRINUSE = port already held by previous process during restart.
-    // The HTTP server handled it gracefully; bot continues without dashboard.
     if (err.code === 'EADDRINUSE' || /EADDRINUSE|address already in use/i.test(msg)) {
         try { logMessage('WARN', `⚠️ Port in use (EADDRINUSE) — bot continues without dashboard`); } catch (_) {}
         return;
@@ -1550,24 +1385,22 @@ process.on('unhandledRejection', (reason, promise) => {
     } catch (_) {}
 });
 
-// ✅ Boot Bot
 (async () => {
     try {
         console.log('\x1b[36m');
         console.log('╔══════════════════════════════════════════╗');
-        console.log('║  ____  _ _                 __  __ ____   ║');
-        console.log('║ / ___|| (_)_   ____ _     |  \\/  |  _ \\  ║');
-        console.log('║ \\___ \\| | \\ \\ / / _` |    | |\\/| | | | | ║');
-        console.log('║  ___) | | |\\ V / (_| |    | |  | | |_| | ║');
-        console.log('║ |____/|_|_| \\_/ \\__,_|    |_|  |_|____/  ║');
-        console.log('║                                            ║');
-        console.log('║        WhatsApp Bot  •  Node.js           ║');
-        console.log('║     github.com/SilvaMD  •  v2.0           ║');
+        console.log('║  __  __    _    _     ___ _  __  __ ____ ║');
+        console.log('║ |  \\/  |  / \\  | |   |_ _| |/ / |  _ \\   ║');
+        console.log('║ | |\\/| | / _ \\ | |    | || \' <  | | | |  ║');
+        console.log('║ | |  | |/ ___ \\| |___ | || . \\  | |_| |  ║');
+        console.log('║ |_|  |_/_/   \\_\\_____|___|_|\\_\\ |____/   ║');
+        console.log('║                                          ║');
+        console.log('║        WhatsApp Bot  •  Node.js          ║');
+        console.log('║     github.com/themalik-g  •  v12.0     ║');
         console.log('╚══════════════════════════════════════════╝');
         console.log('\x1b[0m');
-        logMessage('INFO', 'Booting Silva MD Bot...');
+        logMessage('INFO', 'Booting MALIK MD Bot...');
 
-        // ── Load sudo users from disk ───────────────────────────────────────
         try {
             const sudoPath = require('path').join(__dirname, 'data', 'sudo.json');
             if (require('fs').existsSync(sudoPath)) {
@@ -1582,8 +1415,6 @@ process.on('unhandledRejection', (reason, promise) => {
             logMessage('WARN', `Could not load sudo list: ${e.message}`);
         }
 
-        // loadSession is called ONCE here at startup.
-        // connectToWhatsApp() and all reconnects reuse the saved state on disk.
         await loadSession();
         await connectToWhatsApp();
     } catch (e) {
