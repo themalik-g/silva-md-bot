@@ -6,15 +6,13 @@ const config  = require('../config');
 const { getStr } = require('../lib/theme');
 const moment  = require('moment-timezone');
 
-const WEBSITE = 'https://silvatech.co.ke';
-const TZ      = 'Africa/Nairobi';
+const TZ = 'Africa/Nairobi';
 
 // ── Category definitions ──────────────────────────────────────────────────────
-// Each has a numeric ID for `.menu 3` style read-more
 const CATEGORIES = [
     { id: 1,  icon: '⬇️',  name: 'Downloaders',        cmds: ['yt','ytmp3','ytmp4','tiktok','instagram','facebook','spotify','soundcloud','capcut','apk','catbox','tourl','pinterest','reddit','twitter','threads','gdrive'] },
     { id: 2,  icon: '🎵',  name: 'Music & Audio',       cmds: ['play','shazam','lyrics','toaudio','bgm','addbgm','setbgm','clearbgm','transcribe','tts'] },
-    { id: 3,  icon: '🤖',  name: 'AI & Intelligence',   cmds: ['ai','gpt4','gpt4o','gemini','bard','venice','openai','letmegpt','ask','silva','assistant','imagine','translate','define','calc','shorten','gitclone','anime','manga','describe','caption','carbon'] },
+    { id: 3,  icon: '🤖',  name: 'AI & Intelligence',   cmds: ['ai','gpt4','gpt4o','gemini','bard','venice','openai','letmegpt','ask','silva','malik','assistant','imagine','translate','define','calc','shorten','gitclone','anime','manga','describe','caption','carbon'] },
     { id: 4,  icon: '🔍',  name: 'Search & Info',       cmds: ['wiki','country','ip','currency','time','weather','numberfact','stalk','whois','dns','speedtest','ipinfo','screenshot','fetch','githubstalk'] },
     { id: 5,  icon: '🖼️', name: 'Media & Stickers',    cmds: ['sticker','stickersearch','togif','tojpeg','emojimix','textsticker','qrcode','react','ocr','ascii','color','getpp','togstatus','statussave','captionimage','quotly','viewonce'] },
     { id: 6,  icon: '👥',  name: 'Group Management',    cmds: ['kick','promote','demote','ban','unban','banlist','tagall','hidetag','poll','multipoll','pollresult','lock','unlock','link','revoke','setname','setdesc','broadcast','purge','dmall','warn','mute','unmute','pin','unpin','edit','groupinfo','grouprules','groupstatus','setbio'] },
@@ -35,14 +33,12 @@ const CATEGORIES = [
     { id: 21, icon: '👑',  name: 'Owner & Sudo',        cmds: ['sudo','setsudo','delsudo','getsudo','resetsudo','block','unblock','setmode','setprefix','setbotname','join','cmd','restart','shutdown','backupgroup','restoregroup','broadcast','eval','dmall','autojoin','cleanup','lendlimit'] },
 ];
 
-// ── Box drawing ───────────────────────────────────────────────────────────────
 function hline(n = 38) { return '─'.repeat(n); }
 
 function box(title, lines) {
     return `╭─「 ${title} 」\n${lines.map(l => `│  ${l}`).join('\n')}\n╰${hline()}`;
 }
 
-// ── Load all active plugins ───────────────────────────────────────────────────
 function loadPlugins() {
     const dir = path.join(__dirname);
     const out = [];
@@ -55,97 +51,61 @@ function loadPlugins() {
     return out;
 }
 
-// ── Compact overview (`.menu`) ────────────────────────────────────────────────
-function buildCompactMenu(plugins, pfx, botName, mode) {
+// ── Single Full Menu ─────────────────────────────────────────────────────────
+function buildFullMenu(plugins, pfx, botName, mode) {
     const allCmds   = new Set(plugins.flatMap(p => p.commands || []));
     const modeEmoji = mode === 'PUBLIC' ? '🟢' : mode === 'PRIVATE' ? '🔒' : '🔵';
     const now       = moment().tz(TZ);
-    let totalAssigned = 0;
+    const ownerName = config.OWNER_NAME || 'MALIK MEHTAB';
 
     const header =
-        `\n╔══════════════════════════════════╗\n` +
+        `╔══════════════════════════════════╗\n` +
         `║  ⚡  *${botName.toUpperCase().slice(0,26).padEnd(26)}*  ⚡  ║\n` +
         `║   _The Ultimate WhatsApp Bot_    ║\n` +
         `╚══════════════════════════════════╝\n`;
 
     const statusBlock = box(`📋 Bot Status`, [
-        `◆ *Bot:*      ${botName}`,
+        `◆ *Owner:*    ${ownerName}`,
         `◆ *Prefix:*   \`${pfx}\``,
         `◆ *Mode:*     ${modeEmoji} ${mode}`,
         `◆ *Commands:* ${allCmds.size}`,
         `◆ *Date:*     ${now.format('ddd D MMM YYYY')}`,
-        `◆ *Time:*     ${now.format('hh:mm A')} EAT`,
+        `◆ *Time:*     ${now.format('hh:mm A')}`,
     ]);
 
-    // Numbered category list with command counts
-    const catLines = [];
+    const catBlocks = [];
+    const categorisedCmds = new Set();
+
     for (const cat of CATEGORIES) {
         const found = [...new Set(cat.cmds.filter(c => allCmds.has(c)))];
         if (!found.length) continue;
-        totalAssigned += found.length;
-        const num = String(cat.id).padStart(2, ' ');
-        catLines.push(`│  *${num}.* ${cat.icon}  ${cat.name.padEnd(22)} *(${found.length})*`);
+        found.forEach(c => categorisedCmds.add(c));
+
+        const cmdList = found.map(c => `\`${pfx}${c}\``).join(' • ');
+        catBlocks.push(
+            `╭──「 ${cat.icon} *${cat.name.toUpperCase()}* 」\n` +
+            `│  ${cmdList}\n` +
+            `╰${hline()}`
+        );
     }
 
-    const catBlock =
-        `\n╭${hline()}\n` +
-        `│  📋 *COMMAND CATEGORIES*\n` +
-        `│  _(type \`.menu <number>\` for full list)_\n` +
-        `├${hline()}\n` +
-        catLines.join('\n') +
-        `\n╰${hline()}`;
+    // Include any active commands from plugins not in CATEGORIES list
+    const remaining = [...allCmds].filter(c => !categorisedCmds.has(c));
+    if (remaining.length) {
+        const cmdList = remaining.map(c => `\`${pfx}${c}\``).join(' • ');
+        catBlocks.push(
+            `╭──「 📌 *OTHER COMMANDS* 」\n` +
+            `│  ${cmdList}\n` +
+            `╰${hline()}`
+        );
+    }
 
     const footer =
-        `\n╭┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╮\n` +
-        `│  📖 *Read More Examples:*         │\n` +
-        `│  \`${pfx}menu 3\`  → AI & Intelligence │\n` +
-        `│  \`${pfx}menu 6\`  → Group Management  │\n` +
-        `│  \`${pfx}menu 18\` → Lend & Sub-bot    │\n` +
-        `│  \`${pfx}help <cmd>\` → Command help   │\n` +
-        `╰┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╯\n` +
-        `\n> 🌐 _${WEBSITE}_\n` +
-        `> ⚡ _Made by SilvaTech © ${now.year()}_`;
+        `\n> ⚡ _Powered by ${botName} | Dev: MALIK MEHTAB_`;
 
-    return `${header}${statusBlock}\n${catBlock}\n${footer}`;
+    return `${header}\n${statusBlock}\n\n${catBlocks.join('\n\n')}\n${footer}`;
 }
 
-// ── Category detail page (`.menu <id>`) ───────────────────────────────────────
-function buildCategoryMenu(cat, plugins, pfx) {
-    const allCmds = new Set(plugins.flatMap(p => p.commands || []));
-    const descMap = new Map(
-        plugins.flatMap(p => (p.commands || []).map(c => [c, { desc: p.description || '', usage: p.usage || '', perm: p.permission || 'public' }]))
-    );
-    const found = [...new Set(cat.cmds.filter(c => allCmds.has(c)))];
-    if (!found.length) return `❌ No commands found in *${cat.name}*.`;
-
-    const PERM_ICON = { owner: '👑', admin: '⚙️', public: '🌍' };
-    const lines = found.map(c => {
-        const info    = descMap.get(c) || {};
-        const pIcon   = PERM_ICON[(info.perm || 'public').toLowerCase()] || '🌍';
-        const shortD  = (info.desc || '').slice(0, 45);
-        return `│  ${pIcon} \`${pfx}${c}\`${shortD ? `\n│     _${shortD}_` : ''}`;
-    });
-
-    const header =
-        `\n${cat.icon} *${cat.name.toUpperCase()}*\n` +
-        `_${found.length} command${found.length !== 1 ? 's' : ''} available_\n`;
-
-    const cmdBlock =
-        `╭${hline()}\n` +
-        lines.join('\n│\n') +
-        `\n╰${hline()}`;
-
-    const footer =
-        `\n╭┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╮\n` +
-        `│ \`${pfx}help <cmd>\` for details │\n` +
-        `│ \`${pfx}menu\` for overview      │\n` +
-        `╰┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╯\n` +
-        `\n_🌍 Public  ⚙️ Admin  👑 Owner_`;
-
-    return `${header}${cmdBlock}${footer}`;
-}
-
-// ── Individual command help (`.help <cmd>`) ────────────────────────────────────
 function buildCommandHelp(cmdName, plugins, pfx) {
     const plugin = plugins.find(p => (p.commands || []).includes(cmdName));
     if (!plugin) {
@@ -176,11 +136,10 @@ function buildCommandHelp(cmdName, plugins, pfx) {
     ].join('\n');
 }
 
-// ── Plugin ────────────────────────────────────────────────────────────────────
 module.exports = {
     commands:    ['menu', 'help', 'list', 'cmds', 'commands'],
-    description: 'Show all commands in a categorized menu — use .menu <number> for a category deep-dive',
-    usage:       '.menu | .menu <1-21> | .menu <category name> | .help <command>',
+    description: 'Show all commands in a clean single menu',
+    usage:       '.menu | .help <command>',
     permission:  'public',
     group:       true,
     private:     true,
@@ -188,7 +147,7 @@ module.exports = {
     run: async (sock, message, args, ctx) => {
         const { prefix, contextInfo, safeSend } = ctx;
         const plugins = loadPlugins();
-        const botName = getStr('botName') || config.BOT_NAME || 'Silva MD';
+        const botName = getStr('botName') || config.BOT_NAME || 'MALIK MD';
         const mode    = (config.MODE || 'public').toUpperCase();
         const pfx     = prefix || '.';
         const imgUrl  = getStr('pic1') || config.ALIVE_IMG || 'https://files.catbox.moe/5uli5p.jpeg';
@@ -198,41 +157,18 @@ module.exports = {
             message.message?.conversation || ''
         ).trim().split(/\s+/)[0].replace(/^[^\w]/, '').toLowerCase();
 
-        // ── .help <command> ─────────────────────────────────────────────────
-        if (rawCmd === 'help' && args.length) {
-            const cmdName = args[0].replace(/^\./, '').toLowerCase();
-            return safeSend({ text: buildCommandHelp(cmdName, plugins, pfx), contextInfo }, { quoted: message });
-        }
-
-        // ── .menu <id|name> — read-more for a specific category ─────────────
+        // ── .help <command> or .menu <command> ──────────────────────────────
         if (args.length) {
-            const query = args.join(' ').toLowerCase().trim();
-
-            const byNum  = /^\d+$/.test(query) ? CATEGORIES.find(c => c.id === parseInt(query, 10)) : null;
-            const byName = !byNum ? CATEGORIES.find(c => c.name.toLowerCase().includes(query)) : null;
-            const cat    = byNum || byName;
-
-            if (cat) {
-                return safeSend({ text: buildCategoryMenu(cat, plugins, pfx), contextInfo }, { quoted: message });
-            }
-
-            const cmdName = query.replace(/^\./, '');
-            const plugin  = plugins.find(p => (p.commands || []).includes(cmdName));
+            const query = args.join(' ').toLowerCase().trim().replace(/^\./, '');
+            const plugin = plugins.find(p => (p.commands || []).includes(query));
             if (plugin) {
-                return safeSend({ text: buildCommandHelp(cmdName, plugins, pfx), contextInfo }, { quoted: message });
+                return safeSend({ text: buildCommandHelp(query, plugins, pfx), contextInfo }, { quoted: message });
             }
-
-            const examples = CATEGORIES.slice(0, 6).map(c => `  \`${pfx}menu ${c.id}\` — ${c.icon} ${c.name}`).join('\n');
-            return safeSend({
-                text: `❌ *"${query}"* didn't match any category or command.\n\n📋 *Try:*\n${examples}\n\nOr use \`${pfx}menu\` for the full overview.`,
-                contextInfo
-            }, { quoted: message });
         }
 
-        // ── .menu — compact overview ─────────────────────────────────────────
-        const menuText = buildCompactMenu(plugins, pfx, botName, mode);
+        // ── .menu — single full categorized menu ────────────────────────────
+        const menuText = buildFullMenu(plugins, pfx, botName, mode);
 
-        // Try image + caption first, fall back to plain text
         try {
             await safeSend({ image: { url: imgUrl }, caption: menuText, contextInfo }, { quoted: message });
         } catch {

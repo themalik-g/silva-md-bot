@@ -15,14 +15,11 @@ try {
     normalizeMessageContent = (c) => c;
 }
 
-// Extract the bare phone-number string from any JID format
 function jidToNum(jid) {
     if (!jid) return '';
     return jidNormalizedUser(jid).split('@')[0].replace(/\D/g, '');
 }
 
-// True when two phone numbers refer to the same subscriber.
-// Handles missing country codes by comparing the last 9 significant digits.
 function sameNumber(a, b) {
     if (!a || !b) return false;
     if (a === b) return true;
@@ -31,14 +28,12 @@ function sameNumber(a, b) {
     return tail >= 6 && a.slice(-tail) === b.slice(-tail);
 }
 
-// ─── Permission constants ────────────────────────────────────────────────────
 const PERM = {
     PUBLIC: 'public',
     ADMIN:  'admin',
     OWNER:  'owner'
 };
 
-// ─── Group metadata cache (5 min TTL) ───────────────────────────────────────
 const groupCache = new Map();
 const GROUP_CACHE_TTL = 5 * 60 * 1000;
 
@@ -54,7 +49,6 @@ async function getCachedGroupMetadata(sock, jid) {
     }
 }
 
-// Invalidate cache when group membership changes
 function bindGroupCacheInvalidation(sock) {
     sock.ev.on('group-participants.update', ({ id }) => groupCache.delete(id));
 }
@@ -65,8 +59,6 @@ const MAX_SENDS_PER_MIN = 30;
 async function safeSend(sock, jid, content, opts = {}) {
     if (!jid || !sock?.sendMessage) return null;
 
-    // Reject obviously invalid JIDs.  Valid DM suffixes: @s.whatsapp.net, @lid, @c.us
-    // Valid group suffix: @g.us.  Anything else (e.g. a bare phone number) is rejected.
     const validSuffix = jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid')
         || jid.endsWith('@g.us') || jid.endsWith('@c.us') || jid.endsWith('@newsletter');
     if (!validSuffix) {
@@ -78,7 +70,6 @@ async function safeSend(sock, jid, content, opts = {}) {
     const _preview = (content?.text || content?.caption || '[media]').toString().slice(0, 60);
     const _to      = jid.split('@')[0];
 
-    // Rate limit + jitter
     const now = Date.now();
     while (sendTimestamps.length && now - sendTimestamps[0] > 60000) sendTimestamps.shift();
     if (sendTimestamps.length >= MAX_SENDS_PER_MIN) {
@@ -89,15 +80,10 @@ async function safeSend(sock, jid, content, opts = {}) {
     await new Promise(r => setTimeout(r, jitter));
     sendTimestamps.push(Date.now());
 
-    // @lid DM: establish the outbound E2E session (prekeys) before sending.
-    // Without this, Baileys queues the message but WA drops it silently because
-    // the bot has no registered send-session for that LID account.
-    // Use m.key.remoteJid directly — never reconstruct or remap to @s.whatsapp.net here.
     if (isLidDm && typeof sock.assertSessions === 'function') {
         try { await sock.assertSessions([jid], false); } catch { /* non-fatal */ }
     }
 
-    // Attempt 1 — primary: m.key.remoteJid as-is, full opts (quoted + contextInfo)
     try {
         const result = await sock.sendMessage(jid, content, opts);
         console.log(`✉️  OUT  to=${_to}  "${_preview}"`);
@@ -106,10 +92,6 @@ async function safeSend(sock, jid, content, opts = {}) {
         console.error(`❌ SEND FAILED (attempt 1)  to=${jid}: ${err.message}`);
     }
 
-    // Attempt 2 — strip quoted reply.
-    // WhatsApp Business messages carry a messageContextInfo wrapper that Baileys
-    // embeds when building the quoted context; WA Business servers reject it.
-    // Also strip newsletter forwardedNewsletterMessageInfo from content contextInfo.
     if (opts.quoted) {
         const { quoted: _q, ...optsNoQuote } = opts;
         const safeContent = { ...content };
@@ -126,7 +108,6 @@ async function safeSend(sock, jid, content, opts = {}) {
         }
     }
 
-    // Attempt 3 — plain text, zero opts
     if (content?.text || content?.caption) {
         const plainText = content.text || content.caption;
         try {
@@ -141,18 +122,16 @@ async function safeSend(sock, jid, content, opts = {}) {
     return null;
 }
 
-// Newsletter watermark — only safe in private chats; groups get an empty object
 const GLOBAL_CONTEXT_INFO = {
     forwardingScore: 999,
     isForwarded: true,
     forwardedNewsletterMessageInfo: {
-        newsletterJid: '120363200367779016@newsletter',
-        newsletterName: '◢◤ Silva Tech Nexus ◢◤',
+        newsletterJid: '120363409689492071@newsletter',
+        newsletterName: 'MALIK tech',
         serverMessageId: 144
     }
 };
 
-// ─── Plugin loader ───────────────────────────────────────────────────────────
 const plugins = [];
 const pluginDir = path.join(__dirname, 'plugins');
 
@@ -166,7 +145,6 @@ function loadPlugins() {
             delete require.cache[require.resolve(pluginPath)];
             const plugin = require(pluginPath);
 
-            // Support array exports (e.g. module.exports = [plugin1, plugin2, ...])
             const mods = Array.isArray(plugin) ? plugin : [plugin];
 
             for (const mod of mods) {
@@ -189,7 +167,6 @@ function loadPlugins() {
 
 loadPlugins();
 
-// ─── Connection handlers ─────────────────────────────────────────────────────
 function setupConnectionHandlers(sock) {
     bindGroupCacheInvalidation(sock);
     sock.ev.on('connection.update', ({ connection }) => {
@@ -203,7 +180,6 @@ function setupConnectionHandlers(sock) {
     });
 }
 
-// ─── Command predictor ───────────────────────────────────────────────────────
 function levenshtein(a, b) {
     const m = a.length, n = b.length;
     const dp = Array.from({ length: m + 1 }, (_, i) =>
@@ -223,7 +199,6 @@ function predictCommand(typed, allPlugins) {
         for (const cmd of (plugin.commands || []))
             flat.push({ cmd, plugin });
 
-    // 1. Unambiguous prefix match (typed ≥ 3 chars, matches exactly one command)
     if (typed.length >= 3) {
         const hits = flat.filter(({ cmd }) => cmd.startsWith(typed));
         if (hits.length === 1)
@@ -232,8 +207,6 @@ function predictCommand(typed, allPlugins) {
             return { matches: [...new Set(hits.map(h => h.cmd))], confidence: 'ambiguous' };
     }
 
-    // 2. Fuzzy match via Levenshtein distance
-    //    threshold = 1 for short commands (≤4 chars), 2 for longer ones
     let best = null, bestDist = Infinity;
     for (const { cmd, plugin } of flat) {
         const dist = levenshtein(typed, cmd);
@@ -246,7 +219,6 @@ function predictCommand(typed, allPlugins) {
     return best;
 }
 
-// ─── Main message handler ────────────────────────────────────────────────────
 function formatDuration(ms) {
     const s = Math.floor(ms / 1000);
     const m = Math.floor(s / 60);
@@ -260,19 +232,9 @@ function formatDuration(ms) {
 
 async function handleMessages(sock, message) {
     try {
-        // normalizeMessageContent unwraps WhatsApp Business / multi-device wrappers:
-        // ephemeralMessage, viewOnceMessage, documentWithCaptionMessage, editedMessage, etc.
-        // Without this, Business accounts often have msg.conversation === undefined even
-        // though the text is buried one level deeper inside a wrapper field.
         const rawMsg = message.message;
         if (!rawMsg) return;
 
-        // Manual unwrap for wrappers that some Baileys forks don't cover:
-        // deviceSentMessage   — bot's own messages synced from another linked device
-        // ephemeralMessage    — disappearing messages
-        // viewOnceMessage*    — view-once (already in normalizeMessageContent but belt+suspenders)
-        // documentWithCaption — document+caption wrapper
-        // editedMessage       — in-place message edits
         function _unwrap(c) {
             if (!c) return c;
             return c?.deviceSentMessage?.message
@@ -290,60 +252,35 @@ async function handleMessages(sock, message) {
             : rawMsg) || rawMsg;
         const msg = _unwrap(_normalized) || _normalized;
 
-
-        // jid  = the chat to respond to — always m.key.remoteJid, NEVER reconstructed.
-        // Valid suffixes: @s.whatsapp.net (regular WA), @lid (Business / privacy DM),
-        // @g.us (group).  Do NOT remap @lid to @s.whatsapp.net here — safeSend handles
-        // session establishment and phone-JID fallback automatically.
         const jid    = message.key.remoteJid;
-        // from = the individual who typed the command.
-        // For fromMe private messages participant is undefined and jid is the
-        // recipient — not the sender.  Correct this so ctx.from always refers
-        // to the actual sender (bot's own JID when fromMe, participant when in
-        // a group, or the remote JID for incoming private messages).
         const _botOwnJid = global.botJid || '';
         const from = message.key.participant
             || (message.key.fromMe && !isJidGroup(jid) ? (_botOwnJid || jid) : jid);
-        // sender = chat JID for responses (matches legacy plugin expectation of m.key.remoteJid)
         const sender = jid;
         if (!jid || !from) return;
 
-        // ── Auto-presence: fire instantly on every incoming message ──────────
         if (!message.key.fromMe && (config.AUTO_TYPING || config.AUTO_RECORDING)) {
             const presenceType = config.AUTO_RECORDING ? 'recording' : 'composing';
             try { await sock.sendPresenceUpdate(presenceType, jid); } catch { /* non-fatal */ }
         }
 
-        // isGroup: @g.us = group, @s.whatsapp.net / @lid / @c.us = DM
         const isGroup = isJidGroup(jid);
 
-        // ── Multi-prefix parser ──────────────────────────────────────────────
-        // PREFIX env var supports:
-        //   '.'          → only dot prefix
-        //   '.,!,/,?'    → comma-separated list — any of them works
-        //   'any'        → any single leading non-alphanumeric/non-space char
-        //   '' / 'none'  → no prefix needed (bare command words are matched)
         const rawPrefix   = (config.PREFIX || '.').trim();
         const noPrefixMode  = !rawPrefix || rawPrefix.toLowerCase() === 'none' || rawPrefix.toLowerCase() === 'false';
         const anyPrefixMode = rawPrefix.toLowerCase() === 'any';
         const prefixList    = (!noPrefixMode && !anyPrefixMode)
             ? rawPrefix.split(',').map(p => p.trim()).filter(Boolean)
             : [];
-        // primary prefix used in help text / plugin output
         const prefix = prefixList[0] || (anyPrefixMode ? '.' : '');
 
-        // ── Extract text ─────────────────────────────────────────────────────
-        // Walk through all known message types — WhatsApp Business and newer
-        // WA versions wrap content differently. Order: most specific → most generic.
         const text = (
             msg.conversation ||
             msg.extendedTextMessage?.text ||
-            // deviceSentMessage — bot's own msgs synced from another linked device (WA Business accounts)
             rawMsg.deviceSentMessage?.message?.conversation ||
             rawMsg.deviceSentMessage?.message?.extendedTextMessage?.text ||
             msg.ephemeralMessage?.message?.conversation ||
             msg.ephemeralMessage?.message?.extendedTextMessage?.text ||
-            // viewOnce text (not just media captions)
             msg.viewOnceMessageV2?.message?.conversation ||
             msg.viewOnceMessageV2?.message?.extendedTextMessage?.text ||
             msg.viewOnceMessageV2?.message?.imageMessage?.caption ||
@@ -352,7 +289,6 @@ async function handleMessages(sock, message) {
             msg.videoMessage?.caption ||
             msg.documentMessage?.caption ||
             msg.documentWithCaptionMessage?.message?.documentMessage?.caption ||
-            // WhatsApp Business interactive / template message types
             msg.buttonsMessage?.contentText ||
             msg.buttonsResponseMessage?.selectedDisplayText ||
             msg.listMessage?.description ||
@@ -368,13 +304,11 @@ async function handleMessages(sock, message) {
             msg.productMessage?.contextInfo?.quotedMessage?.conversation ||
             msg.orderMessage?.message ||
             msg.reactionMessage?.text ||
-            // Fallback: walk the entire rawMsg for any conversation/text field not caught above
             rawMsg.conversation ||
             rawMsg.extendedTextMessage?.text ||
             ''
         ).replace(/^\uFEFF/, '').replace(/^\u200B+/, '').trim();
 
-        // ── AFK auto-reply (fires before prefix check, not for owner's own messages) ──
         if (!message.key.fromMe) {
             const afkPlugin = plugins.find(p => p.commands?.includes('afk') && typeof p.isAfk === 'function');
             if (afkPlugin?.isAfk()) {
@@ -382,20 +316,19 @@ async function handleMessages(sock, message) {
                 const th = getActiveTheme()?.global || {};
                 await safeSend(sock, jid, {
                     text: [
-                        `🤖 *${th.botName || 'Silva MD'}*`,
+                        `🤖 *${th.botName || 'MALIK MD'}*`,
                         ``,
                         `${th.greet2 ? `_${th.greet2}!_` : `_Hey!_`} My owner is currently *AFK*.`,
                         `📝 *Reason:* ${reason}`,
                         `⏱ *Away for:* ${formatDuration(Date.now() - since)}`,
                         ``,
-                        `_${th.footer || th.botName || 'Silva MD'}_`
+                        `_${th.footer || th.botName || 'MALIK MD'}_`
                     ].join('\n'),
                 }, { quoted: message });
                 return;
             }
         }
 
-        // ── Anti-link (group only, bot must be admin) ────────────────────────
         if (isGroup && !message.key.fromMe) {
             const antilinkOn = config.ANTILINK || global.antilinkGroups?.has(jid);
             if (antilinkOn) {
@@ -416,8 +349,6 @@ async function handleMessages(sock, message) {
             }
         }
 
-        // ── onMessage hooks — fired for ALL messages (not just commands) ────────
-        // Tracking and auto-reply only for other people's messages (not the bot's own).
         if (!message.key.fromMe) {
             if (typeof global.trackMessage === 'function') try { global.trackMessage(jid, from); } catch {}
             if (typeof global.addXP === 'function') {
@@ -440,9 +371,7 @@ async function handleMessages(sock, message) {
                 } catch {}
             }
         }
-        // Plugin onMessage hooks fire for everyone — including the connected
-        // contact (fromMe=true) — so conversation-aware plugins respond to
-        // the owner's own messages in both private and group chats.
+
         for (const p of plugins) {
             if (typeof p.onMessage !== 'function') continue;
             try {
@@ -453,24 +382,19 @@ async function handleMessages(sock, message) {
             } catch { /* ignore plugin onMessage errors */ }
         }
 
-
-        // ── Detect which prefix was used (or if no prefix needed) ──────────────
-        let usedPrefix = null;       // the actual prefix string found in the message
-        let commandText = '';        // text with prefix stripped
+        let usedPrefix = null;
+        let commandText = '';
 
         if (noPrefixMode) {
-            // Any message could be a command — match bare words
             usedPrefix  = '';
             commandText = text.trim();
         } else if (anyPrefixMode) {
-            // Any single leading character that isn't alphanumeric / space = prefix
             const first = text[0];
             if (first && !/^[a-zA-Z0-9\u00C0-\u024F\s]/.test(first)) {
                 usedPrefix  = first;
                 commandText = text.slice(1).trim();
             }
         } else {
-            // Exact prefix list — check each in order, longest match wins
             const sorted = [...prefixList].sort((a, b) => b.length - a.length);
             for (const p of sorted) {
                 if (text.startsWith(p)) {
@@ -482,12 +406,10 @@ async function handleMessages(sock, message) {
         }
 
         if (usedPrefix === null) {
-            // Allow "silva" or "agent" to trigger the AI assistant without any prefix
-            if (/^(silva|agent)\b/i.test(text.trim())) {
+            if (/^(malik|silva|agent)\b/i.test(text.trim())) {
                 usedPrefix  = '';
                 commandText = text.trim();
             } else {
-                // No prefix matched — fire typing indicator then stop
                 if (!message.key.fromMe && (config.AUTO_TYPING || config.AUTO_RECORDING)) {
                     const presenceType = config.AUTO_RECORDING ? 'recording' : 'composing';
                     try { await sock.sendPresenceUpdate(presenceType, jid); } catch { /* ok */ }
@@ -504,7 +426,6 @@ async function handleMessages(sock, message) {
         const args    = parts;
         if (!command) return;
 
-        // ── Command predictor: resolve typos / short-forms ───────────────────
         let resolvedCommand = command;
         let predictionNote  = null;
         const exactExists   = plugins.some(p => p.commands?.includes(command));
@@ -532,10 +453,6 @@ async function handleMessages(sock, message) {
             }
         }
 
-        // ── Fetch group metadata FIRST — needed for LID resolution ────────────
-        // Modern WhatsApp sends group messages with a @lid (privacy/account ID)
-        // instead of a phone number. We must look up the LID in the participants
-        // list to find the sender's real phone JID before doing any comparisons.
         let isAdmin       = false;
         let isBotAdmin    = false;
         let groupMetadata = null;
@@ -544,24 +461,20 @@ async function handleMessages(sock, message) {
             groupMetadata = await getCachedGroupMetadata(sock, jid);
         }
 
-        // ── Resolve sender phone (handle @lid format) ─────────────────────────
         const isLid = typeof from === 'string' && from.endsWith('@lid');
-        let resolvedFrom = from; // will be the real phone JID if LID is resolved
+        let resolvedFrom = from;
 
         if (isLid) {
-            // 1. Try group participants list (most accurate)
             if (groupMetadata?.participants) {
                 for (const p of groupMetadata.participants) {
                     const pLid = p.lid || '';
                     if (pLid && (pLid === from || jidNormalizedUser(pLid) === jidNormalizedUser(from))) {
-                        resolvedFrom = p.id; // swap LID for real phone JID
+                        resolvedFrom = p.id;
                         break;
                     }
                 }
             }
 
-            // 2. Fall back to the global LID→phone cache populated by silva.js
-            //    (every received message caches participant LID + phone via cacheLidPhone)
             if (resolvedFrom === from && global.lidPhoneCache?.size) {
                 const normLid = from.split(':')[0].split('@')[0];
                 const cachedPhone = global.lidPhoneCache.get(normLid)
@@ -577,19 +490,12 @@ async function handleMessages(sock, message) {
 
         const fromNum = jidToNum(resolvedFrom);
 
-        // ── Resolve owner / bot phone numbers ─────────────────────────────────
-        // Pull directly from process.env first so stale config objects can't
-        // cause a false empty result, then fall through to config and global.
         const ownerRaw  = (process.env.OWNER_NUMBER || '').trim()
             || (typeof config.OWNER_NUMBER === 'string' ? config.OWNER_NUMBER.trim() : '')
             || (global.botNum || '');
         const ownerNum  = ownerRaw.replace(/\D/g, '');
         const botNum    = (global.botNum || '').replace(/\D/g, '');
 
-        // In full-LID groups WhatsApp never exposes phone numbers — the only
-        // identifier is the account LID.  If the sender's LID matches the bot's
-        // own LID they are the same WhatsApp account → owner.
-        // Both sides must be normalised (strip :deviceSuffix) before comparing.
         const botLid     = jidNormalizedUser(global.botLid || '');
         const fromNorm   = jidNormalizedUser(from);
 
@@ -605,7 +511,6 @@ async function handleMessages(sock, message) {
             || (fromNum && botNum   && (fromNum === botNum   || sameNumber(fromNum, botNum)))
             || isSudo;
 
-        // ── Resolve group admin status ────────────────────────────────────────
         if (isGroup && groupMetadata?.participants) {
             const botJid     = sock.user?.id || '';
             const botPhone   = botNum;
@@ -616,13 +521,11 @@ async function handleMessages(sock, message) {
                 const pPhone = (p.id || '').split('@')[0].replace(/\D/g, '');
                 const pLid   = p.lid || '';
 
-                // Is this participant the sender?
                 const isSender =
                     areJidsSameUser(p.id, resolvedFrom) ||
                     (pLid && (pLid === from || jidNormalizedUser(pLid) === jidNormalizedUser(from))) ||
                     (pPhone && fromNum && sameNumber(pPhone, fromNum));
 
-                // Is this participant the bot?
                 const isBot =
                     areJidsSameUser(p.id, botJid) ||
                     (botLid && (jidNormalizedUser(p.id) === botLid || (pLid && jidNormalizedUser(pLid) === botLid))) ||
@@ -633,14 +536,13 @@ async function handleMessages(sock, message) {
             }
         }
 
-        // ── Build unified context ─────────────────────────────────────────────
         const ctx = {
             sock,
             conn:          sock,
             m:             message,
             message,
-            sender,               // = jid (the chat) — where plugins send responses
-            from,                 // = individual who typed the command
+            sender,
+            from,
             jid,
             chat:          jid,
             isGroup,
@@ -650,8 +552,8 @@ async function handleMessages(sock, message) {
             isSudo,
             args,
             text,
-            prefix,               // primary/canonical prefix for help text
-            usedPrefix,           // the actual prefix that triggered this command
+            prefix,
+            usedPrefix,
             groupMetadata,
             contextInfo:   isGroup ? {} : GLOBAL_CONTEXT_INFO,
             mentionedJid:  msg.extendedTextMessage?.contextInfo?.mentionedJid || [],
@@ -662,14 +564,13 @@ async function handleMessages(sock, message) {
             command:       resolvedCommand,
         };
 
-        // ── Ban gate — banned users cannot trigger any command (owner always exempt) ──
         if (!isOwner && global.bannedUsers?.size) {
             const senderNorm = jidNormalizedUser(from);
             if (global.bannedUsers.has(from) || global.bannedUsers.has(senderNorm) || global.bannedUsers.has(resolvedFrom)) {
                 const th = getActiveTheme()?.global || {};
                 return await safeSend(sock, jid, {
                     text: [
-                        `⛔ *${th.botName || 'Silva MD'}*`,
+                        `⛔ *${th.botName || 'MALIK MD'}*`,
                         ``,
                         getStr('owner') || 'You have been banned from using bot commands.',
                         ``,
@@ -679,7 +580,6 @@ async function handleMessages(sock, message) {
             }
         }
 
-        // ── Dispatch ──────────────────────────────────────────────────────────
         const RECORDING_CMDS = new Set(['play', 'song', 'sticker', 's', 'tiktok', 'tt', 'ttdl', 'tiktokdl', 'youtube', 'yt', 'instagram', 'igdl', 'ig', 'insta', 'facebook', 'fb', 'fbdl']);
 
         const fromNum2 = from.split('@')[0];
@@ -691,14 +591,13 @@ async function handleMessages(sock, message) {
 
             const th = getActiveTheme()?.global || {};
 
-            // ── Scope guards — with themed alerts ────────────────────────────
             const allowGroup   = plugin.group   !== false;
             const allowPrivate = plugin.private !== false;
 
             if (isGroup && !allowGroup) {
                 await safeSend(sock, jid, {
                     text: [
-                        `*${th.botName || 'Silva MD'}*`,
+                        `*${th.botName || 'MALIK MD'}*`,
                         ``,
                         getStr('private') || '⚠️ This feature is for private chats only.',
                         ``,
@@ -711,7 +610,7 @@ async function handleMessages(sock, message) {
             if (!isGroup && !allowPrivate) {
                 await safeSend(sock, jid, {
                     text: [
-                        `*${th.botName || 'Silva MD'}*`,
+                        `*${th.botName || 'MALIK MD'}*`,
                         ``,
                         getStr('group') || '❗ This feature is for groups only.',
                         ``,
@@ -721,11 +620,10 @@ async function handleMessages(sock, message) {
                 continue;
             }
 
-            // ── Bot admin guard ───────────────────────────────────────────────
             if (plugin.botAdmin && !isBotAdmin) {
                 await safeSend(sock, jid, {
                     text: [
-                        `*${th.botName || 'Silva MD'}*`,
+                        `*${th.botName || 'MALIK MD'}*`,
                         ``,
                         getStr('botAdmin') || '❗ Please give me admin role first.',
                         ``,
@@ -735,7 +633,6 @@ async function handleMessages(sock, message) {
                 continue;
             }
 
-            // ── Permission check ──────────────────────────────────────────────
             const perm = (plugin.permission || PERM.PUBLIC).toLowerCase();
             let allowed = false;
             if      (perm === PERM.PUBLIC) allowed = true;
@@ -749,7 +646,7 @@ async function handleMessages(sock, message) {
                     : '⛔ This command is for group admins only.';
                 await safeSend(sock, jid, {
                     text: [
-                        `*${th.botName || 'Silva MD'}*`,
+                        `*${th.botName || 'MALIK MD'}*`,
                         ``,
                         getStr(alertKey) || fallback,
                         ``,
@@ -759,13 +656,11 @@ async function handleMessages(sock, message) {
                 continue;
             }
 
-            // ── Prediction note: let user know what command was resolved ────
             if (predictionNote) {
                 await safeSend(sock, jid, { text: predictionNote }, { quoted: message });
                 predictionNote = null;
             }
 
-            // ── Override presence to recording for media commands ───────────
             if (config.AUTO_RECORDING && RECORDING_CMDS.has(resolvedCommand)) {
                 try { await sock.sendPresenceUpdate('recording', jid); } catch { /* non-fatal */ }
             }
@@ -785,7 +680,7 @@ async function handleMessages(sock, message) {
                     : (errTheme?.error?.text || `⚠️ Command error: ${err.message || 'unknown error'}`);
                 await safeSend(sock, jid, {
                     text: [
-                        `*${th.botName || 'Silva MD'}*`,
+                        `*${th.botName || 'MALIK MD'}*`,
                         ``,
                         errMsg,
                         ``,
@@ -794,12 +689,10 @@ async function handleMessages(sock, message) {
                 }, { quoted: message });
             }
 
-            // ── Auto-presence: back to paused after responding ───────────────
             if (config.AUTO_TYPING || config.AUTO_RECORDING) {
                 try { await sock.sendPresenceUpdate('paused', jid); } catch { /* non-fatal */ }
             }
 
-            // ── Only run the first matching plugin — stop after one dispatch ─
             break;
         }
     } catch (err) {
